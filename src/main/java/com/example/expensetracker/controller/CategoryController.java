@@ -17,11 +17,13 @@ import java.util.List;
 @RequestMapping("/api/categories")
 public class CategoryController {
 
-    @Autowired
-    private CategoryRepository categoryRepository;
+    private final CategoryRepository categoryRepository;
+    private final UserRepository userRepository;
 
-    @Autowired
-    private UserRepository userRepository;
+    public CategoryController(CategoryRepository categoryRepository, UserRepository userRepository) {
+        this.categoryRepository = categoryRepository;
+        this.userRepository = userRepository;
+    }
 
     @GetMapping
     public List<Category> getCategories() {

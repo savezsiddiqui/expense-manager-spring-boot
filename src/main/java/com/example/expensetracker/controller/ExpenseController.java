@@ -17,11 +17,13 @@ import java.util.List;
 @RequestMapping("/api/expenses")
 public class ExpenseController {
 
-    @Autowired
-    private ExpenseRepository expenseRepository;
+    private final ExpenseRepository expenseRepository;
+    private final UserRepository userRepository;
 
-    @Autowired
-    private UserRepository userRepository;
+    public ExpenseController(ExpenseRepository expenseRepository, UserRepository userRepository) {
+        this.expenseRepository = expenseRepository;
+        this.userRepository = userRepository;
+    }
 
     @GetMapping
     public List<Expense> getExpenses() {
