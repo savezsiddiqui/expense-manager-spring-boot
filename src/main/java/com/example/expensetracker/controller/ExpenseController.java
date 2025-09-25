@@ -1,12 +1,17 @@
 package com.example.expensetracker.controller;
 
-import com.example.expensetracker.model.Category;
 import com.example.expensetracker.model.Expense;
 import com.example.expensetracker.model.User;
+import com.example.expensetracker.payload.ExpenseRequest;
 import com.example.expensetracker.payload.ExpenseResponseDto;
-import com.example.expensetracker.repository.CategoryRepository;
-import com.example.expensetracker.repository.ExpenseRepository;
 import com.example.expensetracker.repository.UserRepository;
+import com.example.expensetracker.service.ExpenseService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -14,148 +19,98 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/expenses")
+@Tag(name = "Expense Management", description = "APIs for managing expenses")
+@SecurityRequirement(name = "bearerAuth")
 public class ExpenseController {
 
-    private final ExpenseRepository expenseRepository;
+    private final ExpenseService expenseService;
     private final UserRepository userRepository;
-    private final CategoryRepository categoryRepository;
 
-    public ExpenseController(ExpenseRepository expenseRepository, UserRepository userRepository, CategoryRepository categoryRepository) {
-        this.expenseRepository = expenseRepository;
+    public ExpenseController(ExpenseService expenseService, UserRepository userRepository) {
+        this.expenseService = expenseService;
         this.userRepository = userRepository;
-        this.categoryRepository = categoryRepository;
     }
 
-    private Optional<User> getAuthenticatedUser() {
+    private User getAuthenticatedUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return Optional.empty();
-        }
         String email = authentication.getName();
-        return userRepository.findByEmail(email);
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Authenticated user not found in database. This should not happen."));
     }
 
+    @Operation(summary = "Get all expenses for the authenticated user")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Successfully retrieved expenses"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized")
+    })
     @GetMapping
-    public ResponseEntity<?> getExpenses() {
-        Optional<User> optionalUser = getAuthenticatedUser();
-        if (optionalUser.isPresent()) {
-            List<Expense> expenses = expenseRepository.findByUserId(optionalUser.get().getId());
-            List<ExpenseResponseDto> expenseDtos = expenses.stream()
-                    .map(this::convertToExpenseDto)
-                    .collect(Collectors.toList());
-            return new ResponseEntity<>(expenseDtos, HttpStatus.OK);
-        } else {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
-        }
+    public ResponseEntity<List<ExpenseResponseDto>> getExpenses() {
+        User user = getAuthenticatedUser();
+        List<Expense> expenses = expenseService.getExpensesForUser(user);
+        List<ExpenseResponseDto> expenseDtos = expenses.stream()
+                .map(this::convertToExpenseDto)
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(expenseDtos);
     }
 
+    @Operation(summary = "Create a new expense")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Expense created successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request body or category not found"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized")
+    })
     @PostMapping
-    public ResponseEntity<?> createExpense(@RequestBody Expense expense) {
-        Optional<User> optionalUser = getAuthenticatedUser();
-        if (optionalUser.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
-        }
-        User user = optionalUser.get();
-
-        if (expense.getCategory() == null || expense.getCategory().getId() == null) {
-            return new ResponseEntity<>("Category is missing or invalid.", HttpStatus.BAD_REQUEST);
-        }
-        Optional<Category> optionalCategory = categoryRepository.findById(expense.getCategory().getId());
-        if (optionalCategory.isEmpty()) {
-            return new ResponseEntity<>("Category not found.", HttpStatus.BAD_REQUEST);
-        }
-        Category category = optionalCategory.get();
-        if (!category.getUser().getId().equals(user.getId())) {
-            return new ResponseEntity<>("Category does not belong to the current user.", HttpStatus.BAD_REQUEST);
-        }
-
-        expense.setUser(user);
-        expense.setCategory(category);
-        expenseRepository.save(expense);
+    public ResponseEntity<?> createExpense(@Valid @RequestBody ExpenseRequest request) {
+        User user = getAuthenticatedUser();
+        expenseService.createExpense(request, user);
         return new ResponseEntity<>(HttpStatus.CREATED);
     }
 
+    @Operation(summary = "Get a single expense by its ID")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Successfully retrieved expense"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized"),
+            @ApiResponse(responseCode = "403", description = "User not authorized to access this expense"),
+            @ApiResponse(responseCode = "404", description = "Expense not found")
+    })
     @GetMapping("/{id}")
-    public ResponseEntity<?> getExpenseById(@PathVariable Long id) {
-        Optional<User> optionalUser = getAuthenticatedUser();
-        if (optionalUser.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
-        }
-        User user = optionalUser.get();
-
-        Optional<Expense> optionalExpense = expenseRepository.findById(id);
-        if (optionalExpense.isPresent()) {
-            Expense expense = optionalExpense.get();
-            if (!expense.getUser().getId().equals(user.getId())) {
-                return new ResponseEntity<>(HttpStatus.FORBIDDEN);
-            }
-            return new ResponseEntity<>(expense, HttpStatus.OK);
-        } else {
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        }
+    public ResponseEntity<Expense> getExpenseById(@PathVariable Long id) {
+        User user = getAuthenticatedUser();
+        Expense expense = expenseService.getExpenseById(id, user);
+        return ResponseEntity.ok(expense);
     }
 
+    @Operation(summary = "Update an existing expense")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Expense updated successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request body or category not found"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized"),
+            @ApiResponse(responseCode = "403", description = "User not authorized to update this expense"),
+            @ApiResponse(responseCode = "404", description = "Expense not found")
+    })
     @PutMapping("/{id}")
-    public ResponseEntity<?> updateExpense(@PathVariable Long id, @RequestBody Expense expenseDetails) {
-        Optional<User> optionalUser = getAuthenticatedUser();
-        if (optionalUser.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
-        }
-        User user = optionalUser.get();
-
-        if (expenseDetails.getCategory() == null || expenseDetails.getCategory().getId() == null) {
-            return new ResponseEntity<>("Category is missing or invalid.", HttpStatus.BAD_REQUEST);
-        }
-        Optional<Category> optionalCategory = categoryRepository.findById(expenseDetails.getCategory().getId());
-        if (optionalCategory.isEmpty()) {
-            return new ResponseEntity<>("Category not found.", HttpStatus.BAD_REQUEST);
-        }
-        Category category = optionalCategory.get();
-        if (!category.getUser().getId().equals(user.getId())) {
-            return new ResponseEntity<>("Category does not belong to the current user.", HttpStatus.BAD_REQUEST);
-        }
-
-        Optional<Expense> optionalExpense = expenseRepository.findById(id);
-        if (optionalExpense.isPresent()) {
-            Expense expense = optionalExpense.get();
-            if (!expense.getUser().getId().equals(user.getId())) {
-                return new ResponseEntity<>(HttpStatus.FORBIDDEN);
-            }
-            expense.setAmount(expenseDetails.getAmount());
-            expense.setDate(expenseDetails.getDate());
-            expense.setDescription(expenseDetails.getDescription());
-            expense.setCategory(category);
-            Expense updatedExpense = expenseRepository.save(expense);
-            return new ResponseEntity<>(updatedExpense, HttpStatus.OK);
-        } else {
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        }
+    public ResponseEntity<Expense> updateExpense(@PathVariable Long id, @Valid @RequestBody ExpenseRequest request) {
+        User user = getAuthenticatedUser();
+        Expense updatedExpense = expenseService.updateExpense(id, request, user);
+        return ResponseEntity.ok(updatedExpense);
     }
 
+    @Operation(summary = "Delete an expense")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "204", description = "Expense deleted successfully"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized"),
+            @ApiResponse(responseCode = "403", description = "User not authorized to delete this expense"),
+            @ApiResponse(responseCode = "404", description = "Expense not found")
+    })
     @DeleteMapping("/{id}")
     public ResponseEntity<?> deleteExpense(@PathVariable Long id) {
-        Optional<User> optionalUser = getAuthenticatedUser();
-        if (optionalUser.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
-        }
-        User user = optionalUser.get();
-
-        Optional<Expense> optionalExpense = expenseRepository.findById(id);
-        if (optionalExpense.isPresent()) {
-            Expense expense = optionalExpense.get();
-            if (!expense.getUser().getId().equals(user.getId())) {
-                return new ResponseEntity<>(HttpStatus.FORBIDDEN);
-            }
-            expenseRepository.delete(expense);
-            return new ResponseEntity<>(HttpStatus.NO_CONTENT);
-        } else {
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
-        }
+        User user = getAuthenticatedUser();
+        expenseService.deleteExpense(id, user);
+        return ResponseEntity.noContent().build();
     }
 
     private ExpenseResponseDto convertToExpenseDto(Expense expense) {
